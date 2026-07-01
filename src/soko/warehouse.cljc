@@ -63,6 +63,66 @@
 (defn warehouses-with-sku [st sku]
   (keys (get-in st [:levels sku] {})))
 
+;; ---------------------------------------------------------------------------
+;; backorder (negative-effective stock tracking)
+;; ---------------------------------------------------------------------------
+
+(defn backorder-qty
+  "Shortfall qty for a sku@wh: max(0, needed - on-hand). 0 if sufficient."
+  [st sku wh needed]
+  (max 0 (- needed (on-hand st sku wh))))
+
+(defn needs-backorder?
+  "True if reserving `needed` would exceed on-hand (creates a backorder)."
+  [st sku wh needed]
+  (pos? (backorder-qty st sku wh needed)))
+
+(defn reserve-or-backorder
+  "Reserve what's available (up to on-hand); record the shortfall as backordered.
+  Returns {:stock s :backordered qty}. Never clamps stock below 0."
+  [st sku wh qty]
+  (let [q (max 0 qty)
+        avail (on-hand st sku wh)
+        short (max 0 (- q avail))
+        reserved (min q avail)]
+    {:stock (reserve st sku wh reserved)
+     :backordered short}))
+
+;; ---------------------------------------------------------------------------
+;; in-transit transfer (2-phase: initiate → receive)
+;; ---------------------------------------------------------------------------
+
+(defrecord InTransit [id sku wh-from wh-to qty status])
+
+(defn initiate-transfer
+  "Start a 2-phase transfer: decrement source stock (atomic), return an
+  InTransit record (status :in-transit) to be received later. Returns
+  {:stock s :in-transit InTransit} or {:stock s :error :insufficient} if source
+  can't cover the qty."
+  [st sku wh-from wh-to qty id]
+  (let [q (max 0 qty)]
+    (if (available? st sku wh-from q)
+      {:stock (reserve st sku wh-from q)
+       :in-transit (->InTransit id sku wh-from wh-to q :in-transit)}
+      {:stock st :error :insufficient})))
+
+(defn receive-transfer
+  "Complete a 2-phase transfer: increment the destination stock. Returns the
+  new Stock. The InTransit is consumed (caller records it as :received)."
+  [st in-transit]
+  (restock st (:sku in-transit) (:wh-to in-transit) (:qty in-transit)))
+
+(defn receive-transfer-activity
+  "Build a ledger activity for receiving an in-transit transfer (kind :stock-receive)."
+  [in-transit opts]
+  (ledger/activity
+   (merge {:lane :warehouse :kind :stock-receive
+           :title (str "Receive transfer " (:id in-transit))
+           :props {:transfer-id (:id in-transit)
+                   :sku (:sku in-transit)
+                   :qty (:qty in-transit)
+                   :warehouse (:wh-to in-transit)}} opts)))
+
 (defn warehouse-activity
   "Project a warehouse event onto chobo.ledger as a :warehouse activity."
   [opts]
