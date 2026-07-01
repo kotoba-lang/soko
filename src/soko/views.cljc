@@ -20,5 +20,5 @@
   (let [st (:stock db)]
     [:div {:class (class-name :soko)}
      [:h1 "Warehouse / logistics"]
-     (into [:section] (for [[sku whs] (:levels st) wh (keys whs)] [stock-row st sku wh]))
+     (into [:section] (for [[sku whs] (:levels st) wh (keys whs)] (stock-row st sku wh)))
      (into [:section] (map shipment-row (:shipments db [])))]))
