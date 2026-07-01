@@ -3,7 +3,8 @@
   :status :lines}. Status: :pending → :picked → :packed → :shipped → :delivered
   (| :cancelled from pending/picked). Lines are [{:sku :qty}]."
   (:refer-clojure :exclude [deliver])
-  (:require [chobo.ledger :as ledger]))
+  (:require [clojure.string :as str]
+            [chobo.ledger :as ledger]))
 
 (defrecord Shipment [id order-id warehouse carrier tracking status lines])
 
@@ -39,3 +40,46 @@
            :props {:shipment-id (:id s) :order-id (:order-id s)
                    :warehouse (:warehouse s) :carrier (:carrier s)}}
           opts)))
+
+;; ---------------------------------------------------------------------------
+;; carrier + tracking number validation
+;; ---------------------------------------------------------------------------
+
+(def known-carriers
+  "Set of recognized carrier slugs. Host apps may extend; this is the baseline."
+  #{:yamato :sagawa :japan-post :ups :fedex :dhl :usps})
+
+(defn known-carrier?
+  "True if the carrier is in the known set (keyword or string)."
+  [carrier]
+  (let [c (if (string? carrier) (keyword carrier) carrier)]
+    (contains? known-carriers c)))
+
+(def carrier-tracking-patterns
+  "Carrier → regex matching its tracking number format (v1 baseline)."
+  {:yamato     #"\d{12}"
+   :sagawa     #"\d{15}"
+   :japan-post #"[A-Z]{2}\d{9}JP"
+   :ups        #"1Z[0-9A-Z]{16}"
+   :fedex      #"\d{15,20}"
+   :dhl        #"\d{10}"
+   :usps       #"\d{20,22}"})
+
+(defn tracking-valid?
+  "True if a tracking number matches the carrier's pattern. Unknown carrier →
+  just non-blank."
+  [carrier tracking]
+  (let [c (if (string? carrier) (keyword carrier) carrier)
+        pat (get carrier-tracking-patterns c)]
+    (if pat
+      (boolean (and tracking (re-find pat (str tracking))))
+      (and tracking (not (str/blank? (str tracking)))))))
+
+(defn shipment-carrier-valid?
+  "True if the shipment's carrier is known and (if tracking is set) the tracking
+  number matches."
+  [s]
+  (let [c (:carrier s)
+        t (:tracking s)]
+    (and (known-carrier? c)
+         (or (str/blank? t) (tracking-valid? c t)))))
