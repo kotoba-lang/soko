@@ -128,3 +128,52 @@
   [opts]
   (ledger/activity
    (merge {:lane :warehouse :kind :stock-move} opts)))
+
+;; ---------------------------------------------------------------------------
+;; reorder points + low-stock alerts
+;; ---------------------------------------------------------------------------
+
+(defrecord ReorderPolicy [sku warehouse reorder-point reorder-qty])
+
+(defn reorder-policy [m] (merge {:reorder-point 0 :reorder-qty 0} m))
+
+(defn below-reorder-point?
+  "True if on-hand for sku@wh is at or below the policy's reorder-point."
+  [st policy]
+  (<= (on-hand st (:sku policy) (:warehouse policy))
+      (:reorder-point policy 0)))
+
+(defn low-stock-skus
+  "Scan all policies, return those whose stock is at/below their reorder point.
+  Returns [{:sku :warehouse :on-hand :reorder-point :reorder-qty}]."
+  [st policies]
+  (->> policies
+       (filterv #(below-reorder-point? st %))
+       (mapv (fn [p]
+               (assoc p :on-hand (on-hand st (:sku p) (:warehouse p)))))))
+
+(defn auto-reorder
+  "For all policies below reorder point, generate restock suggestions. Returns
+  [{:sku :warehouse :qty :reorder-point}]. Does NOT mutate stock — the host app
+  decides whether to execute the reorder (e.g. create a PO)."
+  [st policies]
+  (->> policies
+       (filterv #(below-reorder-point? st %))
+       (mapv (fn [p]
+               {:sku (:sku p)
+                :warehouse (:warehouse p)
+                :qty (:reorder-qty p 0)
+                :reorder-point (:reorder-point p 0)
+                :current-on-hand (on-hand st (:sku p) (:warehouse p))}))))
+
+(defn reorder-activity
+  "Build a ledger activity for a reorder trigger (kind :reorder)."
+  [suggestion opts]
+  (ledger/activity
+   (merge {:lane :warehouse :kind :reorder
+           :title (str "Reorder " (:sku suggestion) " for " (:warehouse suggestion))
+           :props {:sku (:sku suggestion)
+                   :warehouse (:warehouse suggestion)
+                   :qty (:qty suggestion 0)
+                   :reorder-point (:reorder-point suggestion 0)
+                   :current-on-hand (:current-on-hand suggestion 0)}} opts)))
