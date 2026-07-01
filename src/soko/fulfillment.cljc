@@ -36,3 +36,54 @@
                                     :warehouse wh-id
                                     :lines (map #(select-keys % [:sku :qty]) wh-lines)}))})
     {:error :cannot-fulfill}))
+
+;; ---------------------------------------------------------------------------
+;; split shipment (partial fulfillment when no single warehouse covers a line)
+;; ---------------------------------------------------------------------------
+
+(defn split-line
+  "Split a line {:sku :qty} across warehouses given a Stock. Returns a seq of
+  {:sku :qty :warehouse} allocating the qty greedily across warehouses that have
+  the sku, until the full qty is covered or stock is exhausted. Records the
+  unfulfilled remainder in the last element as {:sku :qty-remaining} when stock
+  is insufficient."
+  [st line]
+  (let [sku (:sku line)
+        needed (:qty line 1)
+        whs (wh/warehouses-with-sku st sku)]
+    (loop [remaining needed
+           [w & rest-w] whs
+           acc []]
+      (cond
+        (<= remaining 0) acc
+        (nil? w) (if (pos? remaining)
+                   (conj acc {:sku sku :qty-remaining remaining})
+                   acc)
+        :else
+        (let [avail (wh/on-hand st sku w)
+              take-now (min avail remaining)]
+          (if (pos? take-now)
+            (recur (- remaining take-now)
+                   rest-w
+                   (conj acc {:sku sku :qty take-now :warehouse w}))
+            (recur remaining rest-w acc)))))))
+
+(defn split-fulfillment-plan
+  "Plan split-shipment fulfillment for an order when no single warehouse can
+  cover all lines. Splits each line greedily across warehouses. Returns
+  {:allocations [...] :shipments [...] :unfulfilled [...]} where allocations
+  are the split lines and shipments are grouped by warehouse. Unfulfilled lines
+  (insufficient total stock) appear in :unfulfilled."
+  [st order-id lines]
+  (let [split-lines (mapcat #(split-line st %) lines)
+        allocations (filterv :warehouse split-lines)
+        unfulfilled (filterv :qty-remaining split-lines)
+        by-wh (group-by :warehouse allocations)
+        shipments (for [[wh-id wh-lines] by-wh]
+                    (ship/shipment {:id (str "shp_" order-id "_" wh-id)
+                                    :order-id order-id
+                                    :warehouse wh-id
+                                    :lines (map #(select-keys % [:sku :qty]) wh-lines)}))]
+    {:allocations allocations
+     :shipments shipments
+     :unfulfilled unfulfilled}))
