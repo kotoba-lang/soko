@@ -14,3 +14,4 @@ jobs:
       - uses: actions/cache@v4
         with: {path: '~/.m2\n~/.gitlibs', key: '${{ runner.os }}-jdk${{ matrix.java }}-clj-${{ hashFiles(''deps.edn'') }}'}
       - run: clojure -M:test
+      - run: clojure -M:lint
