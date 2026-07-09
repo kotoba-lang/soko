@@ -23,3 +23,24 @@
 (deftest cannot-fulfill-test
   (let [r (ful/fulfillment-plan st "ord_1" [{:sku "nope" :qty 1}])]
     (is (= :cannot-fulfill (:error r)))))
+
+;; ---------------------------------------------------------------------------
+;; two lines for the same sku must compete for the same on-hand quantity --
+;; each line must not be checked/allocated against the original, unmodified
+;; stock as if the other line hadn't already claimed some of it.
+;; ---------------------------------------------------------------------------
+
+(def tight-st (wh/stock-from [["sku1" "wh1" 5]]))
+
+(deftest can-fulfill-accounts-for-cumulative-demand-of-repeated-sku
+  (is (not (ful/can-fulfill? tight-st "wh1" [{:sku "sku1" :qty 3} {:sku "sku1" :qty 3}])))
+  (is (ful/can-fulfill? tight-st "wh1" [{:sku "sku1" :qty 3} {:sku "sku1" :qty 2}])))
+
+(deftest pick-list-accounts-for-cumulative-demand-of-repeated-sku
+  (is (nil? (ful/pick-list tight-st [{:sku "sku1" :qty 3} {:sku "sku1" :qty 3}])))
+  (is (= [{:sku "sku1" :qty 3 :warehouse "wh1"} {:sku "sku1" :qty 2 :warehouse "wh1"}]
+         (ful/pick-list tight-st [{:sku "sku1" :qty 3} {:sku "sku1" :qty 2}]))))
+
+(deftest fulfillment-plan-rejects-overcommitted-repeated-sku
+  (is (= {:error :cannot-fulfill}
+         (ful/fulfillment-plan tight-st "ord_2" [{:sku "sku1" :qty 3} {:sku "sku1" :qty 3}]))))

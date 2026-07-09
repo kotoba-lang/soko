@@ -6,22 +6,35 @@
             [soko.shipment :as ship]))
 
 (defn can-fulfill?
-  "True if a single warehouse has all lines in stock."
+  "True if a single warehouse has all lines in stock. Lines are checked against
+  progressively-reserved stock, so two lines for the same sku correctly demand
+  their combined qty rather than each being checked against the same starting
+  on-hand figure."
   [st wh-id lines]
-  (every? #(wh/available? st (:sku %) wh-id (:qty % 1)) lines))
+  (loop [st st lines (seq lines)]
+    (or (empty? lines)
+        (let [{:keys [sku] :as line} (first lines)
+              qty (:qty line 1)]
+          (and (wh/available? st sku wh-id qty)
+               (recur (wh/reserve st sku wh-id qty) (next lines)))))))
 
 (defn pick-list
   "Produce a pick-list [{:sku :qty :warehouse}] for lines, allocating each line
-  to the first warehouse that has it. Returns nil if any line can't be placed."
+  to the first warehouse that has it. Returns nil if any line can't be placed.
+  Allocations are simulated against progressively-reserved stock, so two lines
+  for the same sku correctly compete for the same on-hand quantity instead of
+  each being checked against the original, unmodified stock."
   [st lines]
-  (let [alloc (fn [line]
-                (let [sku (:sku line)
-                      qty (:qty line 1)
-                      wh (some (fn [w] (when (wh/available? st sku w qty) w))
-                               (wh/warehouses-with-sku st sku))]
-                  (when wh (assoc line :warehouse wh))))]
-    (let [picked (map alloc lines)]
-      (when (every? some? picked) (vec picked)))))
+  (loop [st st lines (seq lines) acc []]
+    (if (empty? lines)
+      (vec acc)
+      (let [line (first lines)
+            sku (:sku line)
+            qty (:qty line 1)
+            wh (some (fn [w] (when (wh/available? st sku w qty) w))
+                     (wh/warehouses-with-sku st sku))]
+        (when wh
+          (recur (wh/reserve st sku wh qty) (next lines) (conj acc (assoc line :warehouse wh))))))))
 
 (defn fulfillment-plan
   "Plan fulfillment for an order: pick-list + a draft Shipment per warehouse.
@@ -73,9 +86,20 @@
   cover all lines. Splits each line greedily across warehouses. Returns
   {:allocations [...] :shipments [...] :unfulfilled [...]} where allocations
   are the split lines and shipments are grouped by warehouse. Unfulfilled lines
-  (insufficient total stock) appear in :unfulfilled."
+  (insufficient total stock) appear in :unfulfilled. Each line's split is
+  simulated against progressively-reserved stock, so two lines for the same
+  sku correctly compete for the same on-hand quantity instead of each being
+  split against the original, unmodified stock."
   [st order-id lines]
-  (let [split-lines (mapcat #(split-line st %) lines)
+  (let [split-lines (first
+                     (reduce (fn [[acc st] line]
+                               (let [splits (split-line st line)
+                                     st'    (reduce (fn [s {:keys [sku qty warehouse]}]
+                                                      (cond-> s warehouse (wh/reserve sku warehouse qty)))
+                                                    st splits)]
+                                 [(into acc splits) st']))
+                             [[] st]
+                             lines))
         allocations (filterv :warehouse split-lines)
         unfulfilled (filterv :qty-remaining split-lines)
         by-wh (group-by :warehouse allocations)

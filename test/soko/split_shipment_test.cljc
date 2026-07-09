@@ -37,3 +37,13 @@
         allocated (filter :warehouse (:allocations plan))]
     (is (seq (:unfulfilled plan)))
     (is (= 5 (reduce + 0 (map :qty allocated))))))
+
+(deftest split-fulfillment-plan-accounts-for-cumulative-demand-of-repeated-sku
+  ;; two lines for the same sku must compete for the same on-hand quantity --
+  ;; the second line must see stock already claimed by the first line's split,
+  ;; not the original unmodified stock.
+  (let [tight (wh/stock-from [["sku1" "wh1" 5]])
+        plan  (ful/split-fulfillment-plan tight "ord_2" [{:sku "sku1" :qty 3} {:sku "sku1" :qty 3}])
+        allocated (filter :warehouse (:allocations plan))]
+    (is (= 5 (reduce + 0 (map :qty allocated))))
+    (is (= [{:sku "sku1" :qty-remaining 1}] (:unfulfilled plan)))))
